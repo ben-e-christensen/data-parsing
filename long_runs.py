@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import sys, os
 
 # === CONFIG ===
-BASE_DIR = "/media/ben/Extreme SSD/particle-data"
+BASE_DIR = "/media/ben/SANDISK/particle-data"
 DERIVATIVE_THRESHOLD = -1
 SAMPLE_RATE = 100  # Hz
 WINDOW_SECONDS = 60  # 1-minute windows

@@ -66,9 +66,42 @@ print(f"✅ Saved → {peaks_csv} ({len(result_df)} local maxima)")
 # === STEP 2: Summarize runs ===
 summary = None
 if len(result_df) > 0:
+
+    # Default rule for all speeds != 26
     result_df["speed_change"] = result_df["motor_speed"].ne(result_df["motor_speed"].shift())
     result_df["run_id"] = result_df["speed_change"].cumsum()
 
+    # --- SPECIAL handling for speed == 26 ---
+    mask26 = (result_df["motor_speed"] == 26)
+    count26 = mask26.sum()
+
+    if count26 > 0:
+        print(f"🔧 Splitting {count26} peaks at 26 RPM into forward/backward halves")
+
+        # row numbers of all 26-speed peaks
+        idxs_26 = result_df.index[mask26].to_list()
+
+        # split point
+        half = count26 // 2
+
+        # assign run IDs:
+        # forward-26 = first half
+        # backward-26 = second half
+        run_forward = idxs_26[:half]
+        run_backward = idxs_26[half:]
+
+        # forward-26 → same run as previous speed
+        forward_run_id = result_df.loc[run_forward[0], "run_id"]
+        result_df.loc[run_forward, "run_id"] = forward_run_id
+
+        # backward-26 → NEW run after forward
+        backward_run_id = forward_run_id + 1
+        result_df.loc[run_backward, "run_id"] = backward_run_id
+
+        # increment all later run_ids by 1 to keep order intact
+        result_df.loc[result_df.index > run_backward[-1], "run_id"] += 1
+
+    # Now group by corrected run_id
     summary = (
         result_df.groupby("run_id")
         .agg(
@@ -78,6 +111,7 @@ if len(result_df) > 0:
             angle_min=("ellipse_angle_deg", "min"),
             angle_median=("ellipse_angle_deg", "median"),
             angle_mean=("ellipse_angle_deg", "mean"),
+            angle_std=("ellipse_angle_deg", "std"),   # <— add this
             start_index=("index", "min"),
             end_index=("index", "max"),
         )
@@ -86,8 +120,10 @@ if len(result_df) > 0:
 
     summary.to_csv(summary_csv, index=False)
     print(f"✅ Saved → {summary_csv} ({len(summary)} speed runs summarized)")
+
 else:
     print("⚠️ No valid peaks found — skipping summary.")
+
 
 # === STEP 3: Plots (angle trace, sweep comparison) ===
 if len(result_df) > 0:
@@ -116,49 +152,57 @@ if len(result_df) > 0:
     plt.close()
 
 # 3️⃣ Overlay: first vs second sweep
-# 3️⃣ Overlay: first vs second sweep (split at max speed)
 if summary is not None and len(summary) > 0:
-    # Make sure rows are in time order (they usually are already)
-    summary = summary.sort_values("start_index")
-
-    # Find first index of maximum speed (top of ramp)
-    speeds = summary["motor_speed"].to_numpy()
-    idx_top = int(np.argmax(speeds))
-
-    # Forward sweep: from start up to and including first max
-    first_sweep = summary.iloc[:idx_top + 1].copy()
-
-    # Backward sweep: everything after that
-    second_sweep = summary.iloc[idx_top + 1:].copy()
+    half = len(summary) // 2
+    first_half = summary.iloc[:half]
+    second_half = summary.iloc[half:]
 
     plt.figure(figsize=(8, 5))
 
-    # Plot forward sweep
-    plt.plot(
-        first_sweep["motor_speed"],
-        first_sweep["angle_mean"],
+    # ===== First sweep error bars =====
+    plt.errorbar(
+        first_half["motor_speed"],
+        first_half["angle_mean"],
+        yerr=first_half["angle_std"],
         marker="o",
         lw=2,
-        label="First Sweep (1→max)"
+        capsize=4,
+        label="First Sweep (1→26)",
     )
 
-    # Plot backward sweep (if it exists)
-    if len(second_sweep) > 0:
-        plt.plot(
-            second_sweep["motor_speed"],
-            second_sweep["angle_mean"],
-            marker="o",
-            lw=2,
-            label="Second Sweep (max→1)"
-        )
+    # ===== Second sweep error bars =====
+    plt.errorbar(
+        second_half["motor_speed"],
+        second_half["angle_mean"],
+        yerr=second_half["angle_std"],
+        marker="o",
+        lw=2,
+        capsize=4,
+        label="Second Sweep (26→1)",
+    )
 
-    # X axis: use the actual speeds present in summary
-    all_speeds = np.unique(summary["motor_speed"].to_numpy())
-    plt.xticks(all_speeds, all_speeds.astype(int))
+    # ===== Linear fits =====
+    import numpy as np
+
+    # First sweep fit
+    m1, b1 = np.polyfit(first_half["motor_speed"], first_half["angle_mean"], 1)
+    x_fit1 = np.linspace(first_half["motor_speed"].min(),
+                         first_half["motor_speed"].max(), 200)
+    y_fit1 = m1 * x_fit1 + b1
+    plt.plot(x_fit1, y_fit1, "--", lw=1.8,
+             label=f"Fit 1→26: y = {m1:.3f}x + {b1:.3f}")
+
+    # Second sweep fit
+    m2, b2 = np.polyfit(second_half["motor_speed"], second_half["angle_mean"], 1)
+    x_fit2 = np.linspace(second_half["motor_speed"].min(),
+                         second_half["motor_speed"].max(), 200)
+    y_fit2 = m2 * x_fit2 + b2
+    plt.plot(x_fit2, y_fit2, "--", lw=1.8,
+             label=f"Fit 26→1: y = {m2:.3f}x + {b2:.3f}")
 
     plt.xlabel("Motor Speed (RPM)")
     plt.ylabel("Mean Angle of Repose (°)")
-    plt.title(material_name.replace("-", " "))
+    plt.title(material_name)
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -167,6 +211,7 @@ if summary is not None and len(summary) > 0:
     plt.savefig(overlay_path)
     plt.close()
     print(f"📊 Saved → {overlay_path}")
+
 
 # === STEP 4: Peak Count per Run ===
 if summary is not None and len(summary) > 0:
